@@ -1,0 +1,83 @@
+name: Ubuntu 22.04
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_alive_minutes:
+        description: "Durasi runner aktif (maksimum aman GitHub Actions: 360 menit)"
+        required: false
+        default: "360"
+      bore_port:
+        description: "Port publik Bore; gunakan 0 untuk meminta port acak"
+        required: false
+        default: "0"
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - name: Konfigurasi Ubuntu dan SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          # Sesuai permintaan: refresh indeks paket saja, tanpa apt upgrade.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nano sudo htop openssh-server curl ca-certificates
+
+          sudo hostnamectl set-hostname cloudvps.my.id
+          echo 'cloudvps.my.id' | sudo tee /etc/hostname >/dev/null
+
+          # Peringatan: password ini sengaja ditulis sesuai permintaan pengguna.
+          echo 'root:redz' | sudo chpasswd
+          sudo install -d -m 0755 /run/sshd
+          sudo sed -i \
+            -e 's/^#\?PermitRootLogin .*/PermitRootLogin yes/' \
+            -e 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' \
+            /etc/ssh/sshd_config
+          sudo sshd -t
+          sudo systemctl enable --now ssh
+
+      - name: Pasang Bore
+        shell: bash
+        run: |
+          set -euo pipefail
+          BORE_VERSION='0.5.2'
+          curl --fail --location --retry 3 \
+            "https://github.com/ekzhang/bore/releases/download/v${BORE_VERSION}/bore-v${BORE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            -o /tmp/bore.tar.gz
+          sudo tar -xzf /tmp/bore.tar.gz -C /usr/local/bin bore
+          bore --version
+
+      - name: Buka tunnel SSH ke bore.pub
+        shell: bash
+        env:
+          BORE_PORT: ${{ inputs.bore_port }}
+        run: |
+          set -euo pipefail
+          nohup bore local 22 --to bore.pub --port "$BORE_PORT" \
+            >"$RUNNER_TEMP/bore.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/bore.pid"
+
+          for attempt in {1..30}; do
+            if grep -q 'bore.pub:' "$RUNNER_TEMP/bore.log"; then
+              break
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/bore.log"
+          grep -q 'bore.pub:' "$RUNNER_TEMP/bore.log"
+          echo ""
+          echo "Hubungkan dengan: ssh root@bore.pub -p <PORT_YANG_TERCETAK_DI_ATAS>"
+
+      - name: Pertahankan runner sementara
+        shell: bash
+        env:
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+        run: |
+          set -euo pipefail
+          [[ "$KEEP_ALIVE_MINUTES" =~ ^[1-9][0-9]*$ ]] && (( KEEP_ALIVE_MINUTES <= 360 ))
+          sleep "$((KEEP_ALIVE_MINUTES * 60))"
