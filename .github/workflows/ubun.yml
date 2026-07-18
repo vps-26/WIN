@@ -34,12 +34,18 @@ jobs:
           # Peringatan: password ini sengaja ditulis sesuai permintaan pengguna.
           echo 'root:redz' | sudo chpasswd
           sudo install -d -m 0755 /run/sshd
-          sudo sed -i \
-            -e 's/^#\?PermitRootLogin .*/PermitRootLogin yes/' \
-            -e 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' \
-            /etc/ssh/sshd_config
+          # File 00 dimuat paling awal oleh Include Ubuntu. Ini mengalahkan
+          # konfigurasi cloud-image yang sering mematikan password SSH.
+          sudo tee /etc/ssh/sshd_config.d/00-bore-root.conf >/dev/null <<'EOF'
+          PermitRootLogin yes
+          PasswordAuthentication yes
+          KbdInteractiveAuthentication yes
+          UsePAM yes
+          EOF
           sudo sshd -t
-          sudo systemctl enable --now ssh
+          sudo systemctl enable ssh
+          sudo systemctl restart ssh
+          sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication) (yes)$'
 
       - name: Pasang Bore
         shell: bash
@@ -78,6 +84,10 @@ jobs:
         env:
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
         run: |
+          set -euo pipefail
+[[ "$KEEP_ALIVE_MINUTES" =~ ^[1-9][0-9]*$ ]] && (( KEEP_ALIVE_MINUTES <= 360 ))
+          sleep "$((KEEP_ALIVE_MINUTES * 60))"
+
           set -euo pipefail
           [[ "$KEEP_ALIVE_MINUTES" =~ ^[1-9][0-9]*$ ]] && (( KEEP_ALIVE_MINUTES <= 360 ))
           sleep "$((KEEP_ALIVE_MINUTES * 60))"
