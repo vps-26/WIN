@@ -1,0 +1,296 @@
+name: WinS 2025 RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  winser-2025:
+    runs-on: windows-2025
+    timeout-minutes: 3600
+
+    steps:
+      - name: 🖥️ Install Virtual Display Driver
+        shell: pwsh
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║     MEMASANG VIRTUAL DISPLAY DRIVER        ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+
+          $driverUrl = "https://www.amyuni.com/downloads/usbmmidd_v2.zip"
+          $zipPath   = "$env:TEMP\usbmmidd.zip"
+          $destDir   = "C:\virtualgpu"
+
+          if (Test-Path $destDir) { Remove-Item -Path $destDir -Recurse -Force }
+          New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+
+          Invoke-WebRequest -Uri $driverUrl -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $destDir -Force
+
+          $subfolders = Get-ChildItem -Path $destDir -Directory
+          if ($subfolders.Count -eq 1) {
+              $subfolder = $subfolders[0].FullName
+              Get-ChildItem -Path $subfolder | Move-Item -Destination $destDir -Force
+              Remove-Item $subfolder -Recurse -Force
+          }
+
+          Set-Location $destDir
+          $installerExe = Join-Path $destDir "deviceinstaller64.exe"
+          if (-not (Test-Path $installerExe)) {
+              Write-Error "❌ deviceinstaller64.exe tidak ditemukan di $destDir"
+              Get-ChildItem $destDir | Format-Table Name, Length
+              exit 1
+          }
+
+          Write-Host "📦 Menginstal driver..."
+          & $installerExe install usbmmidd.inf usbmmidd
+          if ($LASTEXITCODE -ne 0) { Write-Error "❌ Gagal install driver"; exit 1 }
+
+          Write-Host "🖥️ Mengaktifkan monitor virtual..."
+          & $installerExe enableidd 0
+          if ($LASTEXITCODE -ne 0) { Write-Error "❌ Gagal enable monitor"; exit 1 }
+
+          Write-Host "✅ Virtual display driver berhasil diinstal dan monitor aktif."
+
+      - name: 🔧 Configure Core RDP Settings
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║       MENGONFIGURASI RDP & THEMES          ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 2 -Force
+
+          Set-Service -Name Themes -StartupType Automatic -ErrorAction SilentlyContinue
+          Start-Service -Name Themes -ErrorAction SilentlyContinue
+
+          $tsPoliciesPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+          if (!(Test-Path $tsPoliciesPath)) { New-Item -Path $tsPoliciesPath -Force }
+          Set-ItemProperty -Path $tsPoliciesPath -Name "fNoRemoteDesktopWallpaper" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fNoRemoteDesktopWallpaper" -Value 0 -Force
+
+          Remove-NetFirewallRule -DisplayName "RDP-Tailscale" -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName "RDP-Tailscale" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389
+
+          Restart-Service -Name TermService -Force
+          Write-Host "✅ RDP & Themes siap."
+
+      - name: 👥 Setup User Accounts for RDP
+        shell: pwsh
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║      MENYIAPKAN AKUN RDP (2 USER)         ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+
+          $password = "Redz132_"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          # 1. Buat akun Administrator baru (jika belum ada)
+          $adminUser = "Administrator"
+          if (Get-LocalUser -Name $adminUser -ErrorAction SilentlyContinue) {
+              Write-Host "Menghapus Administrator lama..."
+              Remove-LocalUser -Name $adminUser -ErrorAction Stop
+          }
+          New-LocalUser -Name $adminUser -Password $securePass -PasswordNeverExpires:$true
+          Add-LocalGroupMember -Group "Administrators" -Member $adminUser -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $adminUser
+          Set-LocalUser -Name $adminUser -PasswordNeverExpires:$true -AccountNeverExpires:$true
+          Write-Host "✅ Administrator siap."
+
+          # 2. Ubah password runneradmin (default user) menjadi sama
+          $runnerUser = "runneradmin"
+          Set-LocalUser -Name $runnerUser -Password $securePass -PasswordNeverExpires:$true -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $runnerUser -ErrorAction SilentlyContinue
+          Write-Host "✅ runneradmin password diupdate."
+
+          Write-Host "Semua user menggunakan password: $password"
+
+      - name: 🎮 Install OpenCL, OpenGL, & Vulkan Compatibility Pack
+        shell: pwsh
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║  INSTALL OPENCL, OPENGL, VULKAN PACK      ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+          winget install -e --id Microsoft.OpenCLGLVulkanCompatibilityPack --accept-source-agreements --accept-package-agreements
+          if ($LASTEXITCODE -ne 0) {
+              Write-Warning "⚠️ Compatibility pack gagal, lanjutkan."
+          } else {
+              Write-Host "✅ OpenCL, OpenGL, Vulkan compatibility pack terinstal."
+          }
+
+      - name: 🎨 Set Custom Wallpaper, Lock Screen, and Profile Picture
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║   MENGATUR WALLPAPER & LOCK SCREEN        ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+          $imageUrl = "https://images5.alphacoders.com/129/thumb-1920-1294333.png"
+          $imagePath = "C:\Windows\Web\Wallpaper\custom_image.png"
+          Invoke-WebRequest -Uri $imageUrl -OutFile $imagePath -UseBasicParsing
+
+          $policyPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+          if (!(Test-Path $policyPath)) { New-Item -Path $policyPath -Force }
+          Set-ItemProperty -Path $policyPath -Name "Wallpaper" -Value $imagePath -Force
+          Set-ItemProperty -Path $policyPath -Name "WallpaperStyle" -Value "2" -Force
+
+          $persPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization"
+          if (!(Test-Path $persPath)) { New-Item -Path $persPath -Force }
+          Set-ItemProperty -Path $persPath -Name "LockScreenImage" -Value $imagePath -Force
+
+          $userPicDir = "C:\ProgramData\Microsoft\User Account Pictures"
+          Copy-Item -Path $imagePath -Destination "$userPicDir\user.png" -Force
+          Copy-Item -Path $imagePath -Destination "$userPicDir\user.jpg" -Force
+          Copy-Item -Path $imagePath -Destination "$userPicDir\user.bmp" -Force
+          Copy-Item -Path $imagePath -Destination "$userPicDir\user-32.png" -Force
+          Copy-Item -Path $imagePath -Destination "$userPicDir\user-40.png" -Force
+          Copy-Item -Path $imagePath -Destination "$userPicDir\user-48.png" -Force
+          Copy-Item -Path $imagePath -Destination "$userPicDir\user-192.png" -Force
+          Write-Host "✅ Wallpaper & lockscreen siap."
+
+      - name: 📜 Create Logon Startup Script
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║   MEMBUAT SCRIPT LOGON WALLPAPER          ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+          $scriptContent = @'
+          Start-Sleep -Seconds 3
+          $imagePath = "C:\Windows\Web\Wallpaper\custom_image.png"
+          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name "Wallpaper" -Value $imagePath -Force
+          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name "WallpaperStyle" -Value "2" -Force
+          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name "TileWallpaper" -Value "0" -Force
+
+          $code = @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class Wallpaper {
+              [DllImport("user32.dll", CharSet = CharSet.Auto)]
+              public static extern int SystemParametersInfo(int uAction, int uParam, string lvParam, int fuWinIni);
+          }
+          "@
+          Add-Type -TypeDefinition $code -ErrorAction SilentlyContinue
+          [Wallpaper]::SystemParametersInfo(20, 0, $imagePath, 3)
+
+          $userDesktop = [Environment]::GetFolderPath("Desktop")
+          if (Test-Path $userDesktop) {
+              Get-ChildItem -Path $userDesktop -File | Where-Object {
+                  $_.Extension -in @(".lnk", ".url") -and 
+                  $_.Name -notlike "*Chrome*" -and 
+                  $_.Name -notlike "*Edge*"
+              } | Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+          Stop-Process -Name explorer -Force
+          '@
+          $scriptPath = "C:\Windows\set_wallpaper.ps1"
+          $scriptContent | Out-File -FilePath $scriptPath -Encoding utf8 -Force
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "SetCustomWallpaper" -Value "PowerShell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Windows\set_wallpaper.ps1" -Force
+          Write-Host "✅ Script logon terpasang."
+
+      - name: 🧹 Clean Global Desktop Shortcuts
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║     MEMBERSIHKAN SHORTCUT PUBLIK         ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+          $desktopPaths = @("C:\Users\Public\Desktop", "C:\Users\Default\Desktop")
+          foreach ($path in $desktopPaths) {
+              if (Test-Path $path) {
+                  Get-ChildItem -Path $path -File | Where-Object {
+                      $_.Extension -in @(".lnk", ".url") -and 
+                      $_.Name -notlike "*Chrome*" -and 
+                      $_.Name -notlike "*Edge*"
+                  } | Remove-Item -Force -ErrorAction SilentlyContinue
+              }
+          }
+          Write-Host "✅ Desktop publik bersih."
+
+      - name: 🔗 Install Tailscale
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║        MENGINSTALL TAILSCALE              ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          Start-Sleep -Seconds 5
+          Write-Host "✅ Tailscale terinstal."
+
+      - name: 🌐 Tailscale Web Login
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║       LOGIN TAILSCALE VIA BROWSER         ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+          $tsPath = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+          $processInfo.FileName = $tsPath
+          $processInfo.Arguments = "up --hostname=wins-25-${{ github.run_number }} --accept-dns=false"
+          $processInfo.RedirectStandardOutput = $true
+          $processInfo.RedirectStandardError = $true
+          $processInfo.UseShellExecute = false
+
+          $process = New-Object System.Diagnostics.Process
+          $process.StartInfo = $processInfo
+          $process.Start() | Out-Null
+
+          $linkFound = $false
+          $timeout = 0
+          while (-not $linkFound -and $timeout -lt 12) {
+              $output = $process.StandardError.ReadLine()
+              if ($output -like "*https://login.tailscale.com/*") {
+                  Write-Host "`n👉 LINK LOGIN ANDA:"
+                  Write-Host "--------------------------------------------------------"
+                  Write-Host $output -ForegroundColor Cyan
+                  Write-Host "--------------------------------------------------------`n"
+                  $linkFound = $true
+              }
+              Start-Sleep -Seconds 2
+              $timeout++
+          }
+
+          Write-Host "Menunggu Anda menyelesaikan login di browser..."
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 36) {
+              $tsIP = & $tsPath ip -4 2>$null
+              if (-not $tsIP) {
+                  Start-Sleep -Seconds 5
+                  $retries++
+              }
+          }
+          if (-not $tsIP) {
+              Write-Error "Waktu login habis. Gagal."
+              exit 1
+          }
+          # Simpan IP TAPI JANGAN TAMPILKAN
+          "TAILSCALE_IP=$tsIP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "✅ Berhasil terhubung ke Tailscale. IP akan ditampilkan setelah semua siap."
+
+      - name: 📡 Verify RDP Accessibility
+        run: |
+          Write-Host "╔══════════════════════════════════════════════╗"
+          Write-Host "║      MEMVERIFIKASI KONEKSI RDP           ║"
+          Write-Host "╚══════════════════════════════════════════════╝"
+          $ip = $env:TAILSCALE_IP
+          $testResult = Test-NetConnection -ComputerName $ip -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "Koneksi RDP internal gagal!"
+              exit 1
+          }
+          Write-Host "✅ Port 3389 terbuka, RDP siap."
+
+      - name: ⏳ Maintain Connection
+        run: |
+          $ip = $env:TAILSCALE_IP
+          $pass = "Redz132_"
+          Write-Host "`n╔══════════════════════════════════════════════════╗"
+          Write-Host "║          KONEKSI RDP SIAP DIGUNAKAN            ║"
+          Write-Host "╠══════════════════════════════════════════════════╣"
+          Write-Host "║  🌍 IP Tailscale : $ip"
+          Write-Host "║  👤 User 1       : Administrator"
+          Write-Host "║  👤 User 2       : runneradmin"
+          Write-Host "║  🔑 Password     : $pass"
+          Write-Host "╚══════════════════════════════════════════════════╝"
+          Write-Host "Silakan gunakan Remote Desktop Connection."
+          Write-Host "Tekan Cancel pada workflow untuk mengakhiri.`n"
+          while ($true) {
+              Write-Host "[$(Get-Date)] 🟢 Runner tetap aktif..."
+              Start-Sleep -Seconds 180
+          }
