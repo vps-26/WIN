@@ -23,7 +23,29 @@ jobs:
           if (Test-Path $destDir) { Remove-Item -Path $destDir -Recurse -Force }
           New-Item -ItemType Directory -Path $destDir -Force | Out-Null
 
-          Invoke-WebRequest -Uri $driverUrl -OutFile $zipPath
+          Write-Host "📥 Mengunduh driver (dengan retry)..." -ForegroundColor Yellow
+          $maxRetries = 3
+          $retryCount = 0
+          $downloaded = $false
+          while (-not $downloaded -and $retryCount -lt $maxRetries) {
+              try {
+                  Invoke-WebRequest -Uri $driverUrl -OutFile $zipPath -UseBasicParsing -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -ErrorAction Stop
+                  $downloaded = $true
+                  Write-Host "✅ Driver berhasil diunduh." -ForegroundColor Green
+              } catch {
+                  $retryCount++
+                  Write-Warning "⚠️ Percobaan $retryCount gagal: $_"
+                  if ($retryCount -lt $maxRetries) {
+                      Write-Host "⏳ Menunggu 5 detik sebelum mencoba ulang..." -ForegroundColor Yellow
+                      Start-Sleep -Seconds 5
+                  } else {
+                      Write-Error "❌ Gagal mengunduh driver setelah $maxRetries percobaan."
+                      exit 1
+                  }
+              }
+          }
+
+          Write-Host "📦 Mengekstrak driver..." -ForegroundColor Yellow
           Expand-Archive -Path $zipPath -DestinationPath $destDir -Force
 
           $subfolders = Get-ChildItem -Path $destDir -Directory
@@ -109,21 +131,6 @@ jobs:
           Write-Host "✅ runneradmin password diupdate." -ForegroundColor Green
 
           Write-Host "`n🔑 Semua user menggunakan password: $password" -ForegroundColor Magenta
-
-      - name: 🎮 Install OpenCL, OpenGL, & Vulkan Compatibility Pack
-        shell: pwsh
-        run: |
-          Write-Host "`n╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
-          Write-Host "║  INSTALL OPENCL, OPENGL, VULKAN PACK      ║" -ForegroundColor Cyan
-          Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-          
-          Write-Host "📦 Menginstal Compatibility Pack..." -ForegroundColor Yellow
-          winget install -e --id Microsoft.OpenCLGLVulkanCompatibilityPack --accept-source-agreements --accept-package-agreements
-          if ($LASTEXITCODE -ne 0) {
-              Write-Warning "⚠️ Compatibility pack gagal, lanjutkan."
-          } else {
-              Write-Host "✅ OpenCL, OpenGL, Vulkan compatibility pack terinstal." -ForegroundColor Green
-          }
 
       - name: 🎨 Set Custom Wallpaper, Lock Screen, and Profile Picture
         run: |
