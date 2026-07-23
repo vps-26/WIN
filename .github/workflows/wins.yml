@@ -2,6 +2,15 @@ name: WinS 2025 RDP
 
 on:
   workflow_dispatch:
+    inputs:
+      username:
+        description: 'Username untuk akun RDP (Administrator)'
+        required: true
+        default: 'Administrator'
+      password:
+        description: 'Password untuk akun RDP (Administrator & runneradmin)'
+        required: true
+        default: 'Redz132_'
 
 jobs:
   winser-2025:
@@ -81,20 +90,21 @@ jobs:
           Write-Host "║      MENYIAPKAN AKUN RDP (2 USER)         ║"
           Write-Host "╚══════════════════════════════════════════════╝"
 
-          $password = "Redz132_"
+          # Ambil input dari workflow
+          $password = "${{ github.event.inputs.password }}"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          # 1. Buat akun Administrator baru (jika belum ada)
-          $adminUser = "Administrator"
+          # 1. Buat akun Administrator baru sesuai input username
+          $adminUser = "${{ github.event.inputs.username }}"
           if (Get-LocalUser -Name $adminUser -ErrorAction SilentlyContinue) {
-              Write-Host "Menghapus Administrator lama..."
+              Write-Host "Menghapus user $adminUser yang sudah ada..."
               Remove-LocalUser -Name $adminUser -ErrorAction Stop
           }
           New-LocalUser -Name $adminUser -Password $securePass -PasswordNeverExpires:$true
           Add-LocalGroupMember -Group "Administrators" -Member $adminUser -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $adminUser
           Set-LocalUser -Name $adminUser -PasswordNeverExpires:$true -AccountNeverExpires:$true
-          Write-Host "✅ Administrator siap."
+          Write-Host "✅ $adminUser siap."
 
           # 2. Ubah password runneradmin (default user) menjadi sama
           $runnerUser = "runneradmin"
@@ -102,7 +112,7 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $runnerUser -ErrorAction SilentlyContinue
           Write-Host "✅ runneradmin password diupdate."
 
-          Write-Host "Semua user menggunakan password: $password"
+          Write-Host "Semua user menggunakan password yang kamu masukkan."
 
       - name: 🎮 Install OpenCL, OpenGL, & Vulkan Compatibility Pack
         shell: pwsh
@@ -279,12 +289,13 @@ jobs:
       - name: ⏳ Maintain Connection
         run: |
           $ip = $env:TAILSCALE_IP
-          $pass = "Redz132_"
+          $user = "${{ github.event.inputs.username }}"
+          $pass = "${{ github.event.inputs.password }}"
           Write-Host "`n╔══════════════════════════════════════════════════╗"
           Write-Host "║          KONEKSI RDP SIAP DIGUNAKAN            ║"
           Write-Host "╠══════════════════════════════════════════════════╣"
           Write-Host "║  🌍 IP Tailscale : $ip"
-          Write-Host "║  👤 User 1       : Administrator"
+          Write-Host "║  👤 User 1       : $user"
           Write-Host "║  👤 User 2       : runneradmin"
           Write-Host "║  🔑 Password     : $pass"
           Write-Host "╚══════════════════════════════════════════════════╝"
